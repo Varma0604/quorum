@@ -16,7 +16,11 @@ from app.security import current_user, hash_password, issue_token, verify_passwo
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
-    yield
+    await manager.start()
+    try:
+        yield
+    finally:
+        await manager.stop()
 
 
 app = FastAPI(title="Quorum", description="Real-time collaborative workspace", version="0.1.0", lifespan=lifespan)
@@ -194,6 +198,7 @@ async def live_document(websocket: WebSocket, document_id: int, token: str):
             await websocket.close(code=4403, reason="Workspace membership required")
             return
     await manager.connect(document_id, websocket)
+    await websocket.send_json({"type": "document.connected", "instance_id": manager.instance_id})
     try:
         while True:
             message = await websocket.receive_json()
@@ -217,7 +222,8 @@ async def live_document(websocket: WebSocket, document_id: int, token: str):
                 event = {"type": "document.updated", "document_id": saved.id, "version": saved.version,
                          "content": saved.content, "edited_by": user_id}
             await websocket.send_json(event)
-            await manager.broadcast(document_id, event, sender=websocket)
+            await manager.broadcast_local(document_id, event, sender=websocket)
+            await manager.publish_remote(document_id, event)
     except WebSocketDisconnect:
         pass
     finally:
