@@ -33,7 +33,9 @@ async def main() -> None:
     async with httpx.AsyncClient(base_url=args.base_url, timeout=30) as client:
         async def register(label: str):
             response = await client.post("/api/v1/auth/register", json={
-                "email": f"benchmark-{run_id}-{label}@example.test",
+                # example.com is a valid reserved documentation domain. The API
+                # validates email syntax but never sends mail in this local test.
+                "email": f"benchmark-{run_id}-{label}@example.com",
                 "password": "benchmark-password-123",
             })
             response.raise_for_status()
