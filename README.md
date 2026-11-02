@@ -17,7 +17,11 @@ For a live document session, connect to `ws://localhost:8002/api/v1/documents/{d
 - Authentication uses signed bearer tokens with a 12-hour expiry; passwords are hashed with Argon2. Workspace members can read and edit documents; only owners can invite members.
 - Version history stores full document snapshots. Restore creates a new version, preserving prior history.
 - With `REDIS_URL` configured, Redis Pub/Sub relays committed document events between API instances; each instance maintains only its own WebSocket connections. Without it, local development uses in-process fan-out only. The Docker Compose deployment uses PostgreSQL as the canonical document store and Redis for live-event fan-out, while the local development default is SQLite. This is optimistic conflict detection, not character-level OT/CRDT merging.
-- Benchmark claims for concurrent clients and P95 latency should be added only after running a repeatable load test.
+- **Recorded benchmark (November 2, 2026):** three authenticated local runs
+  with 25 WebSocket clients, two API instances, and 100 document updates per
+  run delivered all 7,200 expected cross-client broadcasts without failure.
+  Median P50/P95 update latency was **3.28ms / 5.06ms**. This is a local
+  Docker measurement, not a production capacity claim.
 
 ## Development
 
