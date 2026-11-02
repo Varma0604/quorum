@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -6,7 +8,7 @@ from app.main import app
 def test_document_version_conflict_and_restore():
     with TestClient(app) as client:
         registered = client.post("/api/v1/auth/register", json={
-            "email": "owner@example.com", "password": "a-long-test-password"
+            "email": f"owner-{uuid4().hex}@example.com", "password": "a-long-test-password"
         })
         assert registered.status_code == 201
         headers = {"Authorization": "Bearer " + registered.json()["access_token"]}
