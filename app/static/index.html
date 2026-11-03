@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Quorum | Live workspace demo</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e8edf8; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 8% 0%, #192953, transparent 38%), #0b1020; }
+      main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 64px; }
+      header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 28px; }
+      h1 { margin: 0; font-size: clamp(2.25rem, 5vw, 3.75rem); letter-spacing: -0.06em; }
+      h1 span { color: #72e6c1; }
+      p { color: #a9b7d0; line-height: 1.55; }
+      .tag { border: 1px solid #36507e; border-radius: 999px; padding: 7px 12px; color: #a9b7d0; font-size: .8rem; white-space: nowrap; }
+      .layout { display: grid; grid-template-columns: 330px 1fr; gap: 16px; }
+      .panel { background: rgba(17, 25, 48, .9); border: 1px solid #27375d; border-radius: 14px; padding: 20px; box-shadow: 0 14px 45px rgba(0,0,0,.24); }
+      h2 { margin: 0 0 14px; font-size: 1rem; }
+      label { display: block; font-size: .78rem; color: #a9b7d0; margin: 12px 0 6px; }
+      input, textarea, button { font: inherit; }
+      input, textarea { width: 100%; color: #f7f9ff; border: 1px solid #344971; border-radius: 8px; background: #0b1327; padding: 10px; outline: none; }
+      input:focus, textarea:focus { border-color: #72e6c1; box-shadow: 0 0 0 3px rgba(114,230,193,.13); }
+      textarea { height: 360px; resize: vertical; line-height: 1.55; }
+      button { cursor: pointer; border: 0; border-radius: 8px; padding: 10px 12px; margin-top: 10px; color: #04140f; background: #72e6c1; font-weight: 700; }
+      button.secondary { background: #233454; color: #e8edf8; margin-left: 6px; }
+      button:disabled { cursor: not-allowed; opacity: .55; }
+      .hidden { display: none; }
+      .workspace { display: flex; gap: 8px; }
+      .workspace input { min-width: 0; }
+      .editor-title { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }
+      .status { min-height: 22px; font-size: .82rem; color: #a9b7d0; margin-top: 12px; }
+      .status.ok { color: #72e6c1; }
+      .status.error { color: #ff9c9c; }
+      .hint { font-size: .8rem; margin-top: 16px; }
+      code { color: #b4c9ff; }
+      @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } header { display: block; } .tag { display: inline-block; margin-top: 12px; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Quorum<span>.</span></h1>
+          <p>Live editing backed by authenticated WebSockets, PostgreSQL versions, and Redis fan-out.</p>
+        </div>
+        <div class="tag" id="connection">Disconnected</div>
+      </header>
+
+      <div class="layout">
+        <aside class="panel">
+          <h2>1. Sign in</h2>
+          <label for="email">Email</label>
+          <input id="email" type="email" value="demo@example.com" autocomplete="email">
+          <label for="password">Password (10+ characters)</label>
+          <input id="password" type="password" value="quorum-demo-password" autocomplete="current-password">
+          <button id="register">Register</button><button class="secondary" id="login">Sign in</button>
+
+          <div id="workspace-controls" class="hidden">
+            <h2 style="margin-top:28px">2. Create a document</h2>
+            <label for="workspace-name">Workspace</label>
+            <div class="workspace"><input id="workspace-name" value="Demo workspace"><button id="create-workspace">Create</button></div>
+            <label for="document-title">Document title</label>
+            <div class="workspace"><input id="document-title" value="Shared notes"><button id="create-document">Open</button></div>
+          </div>
+          <p class="hint">To demo collaboration, open this same URL in a second browser window, sign in with the same account, and open a document there.</p>
+          <div class="status" id="status" role="status"></div>
+        </aside>
+
+        <section class="panel">
+          <div class="editor-title">
+            <div><h2 id="editor-heading">3. Live editing</h2><span id="document-meta">Create a document to connect.</span></div>
+            <span class="tag" id="version">Version --</span>
+          </div>
+          <textarea id="editor" placeholder="Your shared document will appear here." disabled></textarea>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const state = { token: localStorage.getItem("quorum_token"), workspaceId: null, documentId: null, version: null, socket: null, timer: null };
+      const $ = (id) => document.getElementById(id);
+      const status = (message, kind = "") => { const node = $("status"); node.textContent = message; node.className = `status ${kind}`; };
+      const headers = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${state.token}` });
+      const api = async (path, options = {}) => {
+        const response = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail || body));
+        return body;
+      };
+      const setConnected = (value) => { $("connection").textContent = value; $("connection").style.color = value === "Live" ? "#72e6c1" : ""; };
+      const showWorkspaceControls = () => $("workspace-controls").classList.remove("hidden");
+
+      async function authenticate(path) {
+        const email = $("email").value.trim();
+        const password = $("password").value;
+        try {
+          const result = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+          const body = await result.json();
+          if (!result.ok) throw new Error(typeof body.detail === "string" ? body.detail : "Authentication failed");
+          state.token = body.access_token;
+          localStorage.setItem("quorum_token", state.token);
+          showWorkspaceControls();
+          status(`Signed in as ${email}`, "ok");
+        } catch (error) { status(error.message, "error"); }
+      }
+
+      $("register").onclick = () => authenticate("/api/v1/auth/register");
+      $("login").onclick = () => authenticate("/api/v1/auth/login");
+      if (state.token) { showWorkspaceControls(); status("Saved session found. Create a workspace or sign in again.", "ok"); }
+
+      $("create-workspace").onclick = async () => {
+        try {
+          const workspace = await api("/api/v1/workspaces", { method: "POST", body: JSON.stringify({ name: $("workspace-name").value }) });
+          state.workspaceId = workspace.workspace_id;
+          status(`Workspace “${workspace.name}” created. Now open a document.`, "ok");
+        } catch (error) { status(error.message, "error"); }
+      };
+
+      $("create-document").onclick = async () => {
+        if (!state.workspaceId) return status("Create a workspace first.", "error");
+        try {
+          const document = await api(`/api/v1/workspaces/${state.workspaceId}/documents`, { method: "POST", body: JSON.stringify({ title: $("document-title").value, content: "Start editing together..." }) });
+          openDocument(document);
+          status("Document connected. Open the same document in another window to watch updates sync.", "ok");
+        } catch (error) { status(error.message, "error"); }
+      };
+
+      function openDocument(document) {
+        state.documentId = document.document_id;
+        state.version = document.version;
+        $("editor").disabled = false;
+        $("editor").value = document.content;
+        $("editor-heading").textContent = document.title;
+        $("document-meta").textContent = `Document #${document.document_id}`;
+        $("version").textContent = `Version ${document.version}`;
+        if (state.socket) state.socket.close();
+        const protocol = location.protocol === "https:" ? "wss" : "ws";
+        state.socket = new WebSocket(`${protocol}://${location.host}/api/v1/documents/${document.document_id}/live?token=${encodeURIComponent(state.token)}`);
+        state.socket.onopen = () => setConnected("Live");
+        state.socket.onclose = () => setConnected("Disconnected");
+        state.socket.onerror = () => status("Live connection failed. Sign in again and reopen the document.", "error");
+        state.socket.onmessage = ({ data }) => {
+          const message = JSON.parse(data);
+          if (message.type === "document.updated" || message.type === "document.conflict") {
+            state.version = message.version;
+            $("editor").value = message.content;
+            $("version").textContent = `Version ${message.version}`;
+            if (message.type === "document.conflict") status("A newer edit won; your editor was refreshed.", "error");
+          }
+        };
+      }
+
+      $("editor").addEventListener("input", () => {
+        clearTimeout(state.timer);
+        state.timer = setTimeout(() => {
+          if (!state.socket || state.socket.readyState !== WebSocket.OPEN || !state.documentId) return;
+          state.socket.send(JSON.stringify({ type: "document.update", base_version: state.version, content: $("editor").value }));
+        }, 350);
+      });
+    </script>
+  </body>
+</html>
