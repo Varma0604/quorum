@@ -8,7 +8,7 @@ Quorum is a multi-user workspace API for shared documents. Users register and si
 docker compose up --build
 ```
 
-The API is at `http://localhost:8002`; interactive docs are at `/docs`. Register an account and use its `access_token` as a bearer token in Swagger or subsequent API requests. The API provides `/health`, `/api/v1/auth/register`, `/api/v1/auth/login`, workspace, member, document, and version-history routes.
+The browser demo is at `http://localhost:8002`; interactive docs are at `/docs`. In the demo, register, create a workspace and a document, then open the same URL in a second window to see authenticated WebSocket edits synchronize. The API provides `/health`, `/api/v1/auth/register`, `/api/v1/auth/login`, workspace, member, document, and version-history routes.
 
 For a live document session, connect to `ws://localhost:8002/api/v1/documents/{document_id}/live?token={access_token}`. Send JSON such as `{"type":"document.update","base_version":1,"content":"Updated shared text"}`. Successful edits are persisted in PostgreSQL, assigned a new version, returned to the sender, and broadcast to other connected clients. An edit based on an old version receives a conflict response with the current content and version.
 
@@ -22,6 +22,9 @@ For a live document session, connect to `ws://localhost:8002/api/v1/documents/{d
   run delivered all 7,200 expected cross-client broadcasts without failure.
   Median P50/P95 update latency was **3.28ms / 5.06ms**. This is a local
   Docker measurement, not a production capacity claim.
+- The hosted demo is intentionally a single API instance. The Docker Compose
+  deployment is the reference environment for the two-instance Redis fan-out
+  architecture and benchmark.
 
 ## Development
 
@@ -49,3 +52,4 @@ and verifies that every non-writing client receives every persisted update.
 It prints the workload, number of observed instances, successful broadcasts,
 failure count, and P50/P95 update latency. Increase `--clients` to 25 only
 after the 10-client run completes without failures.
+
