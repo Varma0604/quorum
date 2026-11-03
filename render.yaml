@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: quorum-demo
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: quorum-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_ISSUER
+        value: quorum-demo
+
+databases:
+  - name: quorum-db
+    plan: free
+    databaseName: quorum
+    ipAllowList: []
+
