@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import jwt
 from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -24,6 +26,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Quorum", description="Real-time collaborative workspace", version="0.1.0", lifespan=lifespan)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class Credentials(BaseModel):
@@ -63,6 +66,12 @@ def require_document(db: Session, document_id: int, user: User):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "quorum"}
+
+
+@app.get("/", include_in_schema=False)
+def demo():
+    """Serve the intentionally small browser demo for the existing API."""
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.post("/api/v1/auth/register", status_code=201)
