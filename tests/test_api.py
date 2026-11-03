@@ -5,6 +5,14 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
+def test_browser_demo_is_served():
+    with TestClient(app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    assert "Quorum" in response.text
+    assert "Live editing" in response.text
+
+
 def test_document_version_conflict_and_restore():
     with TestClient(app) as client:
         registered = client.post("/api/v1/auth/register", json={
