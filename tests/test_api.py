@@ -34,3 +34,23 @@ def test_document_version_conflict_and_restore():
         assert restored.status_code == 200
         assert restored.json()["content"] == "first"
         assert restored.json()["version"] == 3
+
+
+def test_incident_room_persists_a_timeline_and_can_resolve():
+    with TestClient(app) as client:
+        registered = client.post("/api/v1/auth/register", json={
+            "email": f"commander-{uuid4().hex}@example.com", "password": "a-long-test-password"
+        })
+        headers = {"Authorization": "Bearer " + registered.json()["access_token"]}
+        created = client.post("/api/v1/incidents", headers=headers, json={
+            "title": "Checkout errors", "severity": "high"
+        })
+        assert created.status_code == 201
+        incident_id = created.json()["incident_id"]
+        update = client.post(f"/api/v1/incidents/{incident_id}/events", headers=headers,
+                             json={"message": "Rolled back the payment deploy."})
+        assert update.status_code == 201
+        resolved = client.post(f"/api/v1/incidents/{incident_id}/resolve", headers=headers)
+        assert resolved.status_code == 200
+        assert resolved.json()["status"] == "resolved"
+        assert [event["type"] for event in resolved.json()["events"]] == ["opened", "update", "resolved"]
