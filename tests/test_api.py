@@ -55,3 +55,13 @@ def test_incident_room_persists_a_timeline_and_can_resolve():
         assert resolved.status_code == 200
         assert resolved.json()["status"] == "resolved"
         assert [event["type"] for event in resolved.json()["events"]] == ["opened", "update", "resolved"]
+        rejected = client.post(f"/api/v1/incidents/{incident_id}/events", headers=headers,
+                               json={"message": "This must not be accepted."})
+        assert rejected.status_code == 409
+
+        outsider = client.post("/api/v1/auth/register", json={
+            "email": f"outsider-{uuid4().hex}@example.com", "password": "a-long-test-password"
+        })
+        outsider_headers = {"Authorization": "Bearer " + outsider.json()["access_token"]}
+        forbidden = client.get(f"/api/v1/incidents/{incident_id}", headers=outsider_headers)
+        assert forbidden.status_code == 403
