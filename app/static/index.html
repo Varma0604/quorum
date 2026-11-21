@@ -73,6 +73,8 @@
             <label for="incident-severity">Severity</label>
             <select id="incident-severity"><option value="critical">Critical</option><option value="high" selected>High</option><option value="medium">Medium</option><option value="low">Low</option></select>
             <button id="create-incident">Launch incident room</button>
+            <label for="join-incident-id">Join an existing incident room</label>
+            <div class="workspace"><input id="join-incident-id" type="number" min="1" placeholder="Room ID, e.g. 1"><button id="join-incident">Join</button></div>
             <div id="incident-controls" class="hidden">
               <label for="incident-update">Timeline update</label>
               <input id="incident-update" placeholder="What changed?">
@@ -180,6 +182,16 @@
           const incident = await api("/api/v1/incidents", { method: "POST", body: JSON.stringify({ title: $("incident-title").value, severity: $("incident-severity").value }) });
           renderIncident(incident);
           status("Incident room opened. Timeline updates will sync to connected responders.", "ok");
+        } catch (error) { status(error.message, "error"); }
+      };
+
+      $("join-incident").onclick = async () => {
+        const incidentId = $("join-incident-id").value;
+        if (!incidentId) return status("Enter an incident room ID to join.", "error");
+        try {
+          const incident = await api(`/api/v1/incidents/${incidentId}`);
+          renderIncident(incident);
+          status(`Joined incident room #${incidentId}.`, "ok");
         } catch (error) { status(error.message, "error"); }
       };
 
