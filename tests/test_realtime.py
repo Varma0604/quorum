@@ -11,6 +11,9 @@ class FakeSocket:
     async def send_json(self, message):
         self.messages.append(message)
 
+    async def accept(self):
+        return None
+
 
 class FakeRedis:
     def __init__(self):
@@ -44,5 +47,30 @@ def test_remote_event_envelope_identifies_its_origin_and_document():
         assert json.loads(fake_redis.published[0][1]) == {
             "origin": "api-a", "room": "document:7", "event": event,
         }
+
+    asyncio.run(check())
+
+
+def test_incident_event_reaches_a_different_api_instance_and_reconnects():
+    async def check():
+        source = ConnectionManager(redis_url=None, instance_id="api-a")
+        destination = ConnectionManager(redis_url=None, instance_id="api-b")
+        source_redis = FakeRedis()
+        source._redis = source_redis
+        event = {"type": "incident.event", "incident_id": 19, "message": "Rollback started."}
+
+        await source.publish_remote("incident:19", event)
+        envelope = json.loads(source_redis.published[0][1])
+
+        disconnected, reconnected = FakeSocket(), FakeSocket()
+        await destination.connect("incident:19", disconnected)
+        destination.disconnect("incident:19", disconnected)
+        await destination.connect("incident:19", reconnected)
+        await destination.deliver_remote(envelope)
+
+        assert disconnected.messages == []
+        assert reconnected.messages == [event]
+        await source.deliver_remote(envelope)
+        assert source.rooms.get("incident:19") is None
 
     asyncio.run(check())
