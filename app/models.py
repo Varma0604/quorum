@@ -24,6 +24,7 @@ class Workspace(Base):
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     members: Mapped[list["Membership"]] = relationship(cascade="all, delete-orphan")
+    incidents: Mapped[list["Incident"]] = relationship(back_populates="workspace", cascade="all, delete-orphan")
 
 
 class Membership(Base):
@@ -55,3 +56,29 @@ class Revision(Base):
     edited_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     document: Mapped[Document] = relationship(back_populates="revisions")
+
+
+class Incident(Base):
+    """A durable command room layered on top of an authenticated workspace."""
+    __tablename__ = "incidents"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    workspace_id: Mapped[int] = mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(250))
+    severity: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    workspace: Mapped[Workspace] = relationship(back_populates="incidents")
+    events: Mapped[list["IncidentEvent"]] = relationship(back_populates="incident", cascade="all, delete-orphan")
+
+
+class IncidentEvent(Base):
+    __tablename__ = "incident_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id", ondelete="CASCADE"), index=True)
+    author_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    event_type: Mapped[str] = mapped_column(String(40), default="update")
+    message: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    incident: Mapped[Incident] = relationship(back_populates="events")
