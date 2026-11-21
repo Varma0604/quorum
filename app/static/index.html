@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Quorum | Live workspace demo</title>
+    <title>Quorum | Live incident command demo</title>
     <style>
       :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e8edf8; }
       * { box-sizing: border-box; }
@@ -29,6 +29,10 @@
       .workspace { display: flex; gap: 8px; }
       .workspace input { min-width: 0; }
       .editor-title { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 10px; }
+      .timeline { list-style: none; margin: 14px 0 0; padding: 0; border-top: 1px solid #27375d; }
+      .timeline li { padding: 10px 0; border-bottom: 1px solid #27375d; color: #d8e0f2; font-size: .88rem; }
+      .timeline time { display: block; margin-bottom: 3px; color: #8798bb; font-size: .74rem; }
+      select { width: 100%; color: #f7f9ff; border: 1px solid #344971; border-radius: 8px; background: #0b1327; padding: 10px; }
       .status { min-height: 22px; font-size: .82rem; color: #a9b7d0; margin-top: 12px; }
       .status.ok { color: #72e6c1; }
       .status.error { color: #ff9c9c; }
@@ -42,7 +46,7 @@
       <header>
         <div>
           <h1>Quorum<span>.</span></h1>
-          <p>Live editing backed by authenticated WebSockets, PostgreSQL versions, and Redis fan-out.</p>
+          <p>Real-time incident rooms backed by authenticated WebSockets, durable timelines, and Redis fan-out.</p>
         </div>
         <div class="tag" id="connection">Disconnected</div>
       </header>
@@ -62,6 +66,18 @@
             <div class="workspace"><input id="workspace-name" value="Demo workspace"><button id="create-workspace">Create</button></div>
             <label for="document-title">Document title</label>
             <div class="workspace"><input id="document-title" value="Shared notes"><button id="create-document">Open</button></div>
+
+            <h2 style="margin-top:28px">Or open an incident room</h2>
+            <label for="incident-title">Incident title</label>
+            <input id="incident-title" value="Checkout errors">
+            <label for="incident-severity">Severity</label>
+            <select id="incident-severity"><option value="critical">Critical</option><option value="high" selected>High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+            <button id="create-incident">Launch incident room</button>
+            <div id="incident-controls" class="hidden">
+              <label for="incident-update">Timeline update</label>
+              <input id="incident-update" placeholder="What changed?">
+              <button id="post-incident-update">Post update</button><button class="secondary" id="resolve-incident">Resolve</button>
+            </div>
           </div>
           <p class="hint">To demo collaboration, open this same URL in a second browser window, sign in with the same account, and open a document there.</p>
           <div class="status" id="status" role="status"></div>
@@ -73,12 +89,16 @@
             <span class="tag" id="version">Version --</span>
           </div>
           <textarea id="editor" placeholder="Your shared document will appear here." disabled></textarea>
+          <div id="incident-panel" class="hidden">
+            <div class="editor-title" style="margin-top:22px"><div><h2 id="incident-heading">Incident timeline</h2><span id="incident-meta"></span></div><span class="tag" id="incident-status">Open</span></div>
+            <ul id="incident-timeline" class="timeline"></ul>
+          </div>
         </section>
       </div>
     </main>
 
     <script>
-      const state = { token: localStorage.getItem("quorum_token"), workspaceId: null, documentId: null, version: null, socket: null, timer: null };
+      const state = { token: localStorage.getItem("quorum_token"), workspaceId: null, documentId: null, version: null, socket: null, timer: null, incidentId: null, incidentSocket: null };
       const $ = (id) => document.getElementById(id);
       const status = (message, kind = "") => { const node = $("status"); node.textContent = message; node.className = `status ${kind}`; };
       const headers = () => ({ "Content-Type": "application/json", Authorization: `Bearer ${state.token}` });
@@ -123,6 +143,59 @@
           const document = await api(`/api/v1/workspaces/${state.workspaceId}/documents`, { method: "POST", body: JSON.stringify({ title: $("document-title").value, content: "Start editing together..." }) });
           openDocument(document);
           status("Document connected. Open the same document in another window to watch updates sync.", "ok");
+        } catch (error) { status(error.message, "error"); }
+      };
+
+      function appendIncidentEvent(event) {
+        const item = document.createElement("li");
+        const time = event.created_at ? new Date(event.created_at).toLocaleTimeString() : "Now";
+        item.innerHTML = `<time>${time} · ${event.type || event.event_type || "update"}</time>${event.message}`;
+        $("incident-timeline").appendChild(item);
+      }
+
+      function renderIncident(incident) {
+        state.incidentId = incident.incident_id;
+        $("incident-panel").classList.remove("hidden");
+        $("incident-controls").classList.remove("hidden");
+        $("incident-heading").textContent = incident.title;
+        $("incident-meta").textContent = `${incident.severity.toUpperCase()} severity · Room #${incident.incident_id}`;
+        $("incident-status").textContent = incident.status;
+        $("incident-timeline").replaceChildren();
+        incident.events.forEach(appendIncidentEvent);
+        $("incident-update").disabled = incident.status !== "open";
+        $("post-incident-update").disabled = incident.status !== "open";
+        $("resolve-incident").disabled = incident.status !== "open";
+        if (state.incidentSocket) state.incidentSocket.close();
+        const protocol = location.protocol === "https:" ? "wss" : "ws";
+        state.incidentSocket = new WebSocket(`${protocol}://${location.host}/api/v1/incidents/${incident.incident_id}/live?token=${encodeURIComponent(state.token)}`);
+        state.incidentSocket.onmessage = ({ data }) => {
+          const event = JSON.parse(data);
+          if (event.type === "incident.event") appendIncidentEvent(event);
+          if (event.type === "incident.resolved") { $("incident-status").textContent = "resolved"; appendIncidentEvent(event); $("incident-update").disabled = true; $("post-incident-update").disabled = true; $("resolve-incident").disabled = true; }
+        };
+      }
+
+      $("create-incident").onclick = async () => {
+        try {
+          const incident = await api("/api/v1/incidents", { method: "POST", body: JSON.stringify({ title: $("incident-title").value, severity: $("incident-severity").value }) });
+          renderIncident(incident);
+          status("Incident room opened. Timeline updates will sync to connected responders.", "ok");
+        } catch (error) { status(error.message, "error"); }
+      };
+
+      $("post-incident-update").onclick = async () => {
+        if (!state.incidentId || !$("incident-update").value.trim()) return;
+        try {
+          await api(`/api/v1/incidents/${state.incidentId}/events`, { method: "POST", body: JSON.stringify({ message: $("incident-update").value.trim() }) });
+          $("incident-update").value = "";
+        } catch (error) { status(error.message, "error"); }
+      };
+
+      $("resolve-incident").onclick = async () => {
+        try {
+          const incident = await api(`/api/v1/incidents/${state.incidentId}/resolve`, { method: "POST" });
+          renderIncident(incident);
+          status("Incident resolved; its durable timeline remains available.", "ok");
         } catch (error) { status(error.message, "error"); }
       };
 
