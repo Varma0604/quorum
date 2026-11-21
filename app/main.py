@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import jwt
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import JWT_ISSUER, JWT_SECRET
 from app.database import Base, SessionLocal, engine, get_db
-from app.models import Document, Membership, Revision, User, Workspace
+from app.models import Document, Incident, IncidentEvent, Membership, Revision, User, Workspace
 from app.realtime import manager
 from app.security import current_user, hash_password, issue_token, verify_password
 
@@ -48,6 +49,15 @@ class DocumentUpdate(BaseModel):
     base_version: int = Field(ge=1)
 
 
+class IncidentInput(BaseModel):
+    title: str = Field(min_length=3, max_length=250)
+    severity: str = Field(pattern="^(critical|high|medium|low)$")
+
+
+class IncidentEventInput(BaseModel):
+    message: str = Field(min_length=1, max_length=2_000)
+
+
 def require_membership(db: Session, workspace_id: int, user_id: int):
     membership = db.query(Membership).filter_by(workspace_id=workspace_id, user_id=user_id).one_or_none()
     if not membership:
@@ -61,6 +71,25 @@ def require_document(db: Session, document_id: int, user: User):
         raise HTTPException(status_code=404, detail="Document not found")
     require_membership(db, document.workspace_id, user.id)
     return document
+
+
+def require_incident(db: Session, incident_id: int, user: User):
+    incident = db.get(Incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    require_membership(db, incident.workspace_id, user.id)
+    return incident
+
+
+def incident_payload(incident: Incident):
+    return {
+        "incident_id": incident.id, "workspace_id": incident.workspace_id, "title": incident.title,
+        "severity": incident.severity, "status": incident.status, "created_at": incident.created_at,
+        "resolved_at": incident.resolved_at,
+        "events": [{"event_id": event.id, "type": event.event_type, "message": event.message,
+                    "author_id": event.author_id, "created_at": event.created_at}
+                   for event in sorted(incident.events, key=lambda item: item.created_at)],
+    }
 
 
 @app.get("/health")
@@ -108,6 +137,65 @@ def create_workspace(data: WorkspaceInput, user: User = Depends(current_user), d
 def list_workspaces(user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.query(Workspace, Membership.role).join(Membership).filter(Membership.user_id == user.id).all()
     return [{"workspace_id": workspace.id, "name": workspace.name, "role": role} for workspace, role in rows]
+
+
+@app.post("/api/v1/incidents", status_code=201)
+def create_incident(data: IncidentInput, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Create an authenticated incident room with a persistent timeline."""
+    workspace = Workspace(name=f"Incident: {data.title}", owner_id=user.id)
+    workspace.members.append(Membership(user_id=user.id, role="owner"))
+    db.add(workspace)
+    db.flush()
+    incident = Incident(workspace_id=workspace.id, title=data.title, severity=data.severity, created_by=user.id)
+    db.add(incident)
+    db.flush()
+    incident.events.append(IncidentEvent(author_id=user.id, event_type="opened", message="Incident room opened."))
+    db.commit()
+    db.refresh(incident)
+    return incident_payload(incident)
+
+
+@app.get("/api/v1/incidents/{incident_id}")
+def get_incident(incident_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return incident_payload(require_incident(db, incident_id, user))
+
+
+@app.post("/api/v1/incidents/{incident_id}/events", status_code=201)
+async def add_incident_event(incident_id: int, data: IncidentEventInput,
+                             user: User = Depends(current_user), db: Session = Depends(get_db)):
+    incident = require_incident(db, incident_id, user)
+    if incident.status != "open":
+        raise HTTPException(status_code=409, detail="Resolved incidents cannot accept new timeline events")
+    event = IncidentEvent(incident_id=incident.id, author_id=user.id, event_type="update", message=data.message)
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    payload = {"type": "incident.event", "incident_id": incident.id, "event_id": event.id,
+               "event_type": event.event_type, "message": event.message, "author_id": user.id,
+               "created_at": event.created_at.isoformat()}
+    room = f"incident:{incident.id}"
+    await manager.broadcast_local(room, payload)
+    await manager.publish_remote(room, payload)
+    return payload
+
+
+@app.post("/api/v1/incidents/{incident_id}/resolve")
+async def resolve_incident(incident_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    incident = require_incident(db, incident_id, user)
+    if incident.status == "resolved":
+        return incident_payload(incident)
+    incident.status = "resolved"
+    incident.resolved_at = datetime.now(timezone.utc)
+    event = IncidentEvent(incident_id=incident.id, author_id=user.id, event_type="resolved", message="Incident marked resolved.")
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    payload = {"type": "incident.resolved", "incident_id": incident.id, "event_id": event.id,
+               "message": event.message, "created_at": event.created_at.isoformat()}
+    room = f"incident:{incident.id}"
+    await manager.broadcast_local(room, payload)
+    await manager.publish_remote(room, payload)
+    return incident_payload(incident)
 
 
 @app.post("/api/v1/workspaces/{workspace_id}/members", status_code=201)
@@ -206,7 +294,8 @@ async def live_document(websocket: WebSocket, document_id: int, token: str):
         if not document or not db.query(Membership).filter_by(workspace_id=document.workspace_id, user_id=user_id).first():
             await websocket.close(code=4403, reason="Workspace membership required")
             return
-    await manager.connect(document_id, websocket)
+    room = f"document:{document_id}"
+    await manager.connect(room, websocket)
     await websocket.send_json({"type": "document.connected", "instance_id": manager.instance_id})
     try:
         while True:
@@ -231,9 +320,35 @@ async def live_document(websocket: WebSocket, document_id: int, token: str):
                 event = {"type": "document.updated", "document_id": saved.id, "version": saved.version,
                          "content": saved.content, "edited_by": user_id}
             await websocket.send_json(event)
-            await manager.broadcast_local(document_id, event, sender=websocket)
-            await manager.publish_remote(document_id, event)
+            await manager.broadcast_local(room, event, sender=websocket)
+            await manager.publish_remote(room, event)
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(document_id, websocket)
+        manager.disconnect(room, websocket)
+
+
+@app.websocket("/api/v1/incidents/{incident_id}/live")
+async def live_incident(websocket: WebSocket, incident_id: int, token: str):
+    """Live timeline channel for an incident command room."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], issuer=JWT_ISSUER)
+        user_id = int(payload["sub"])
+    except (jwt.PyJWTError, KeyError, ValueError):
+        await websocket.close(code=4401, reason="Invalid or expired token")
+        return
+    with SessionLocal() as db:
+        incident = db.get(Incident, incident_id)
+        if not incident or not db.query(Membership).filter_by(workspace_id=incident.workspace_id, user_id=user_id).first():
+            await websocket.close(code=4403, reason="Incident membership required")
+            return
+    room = f"incident:{incident_id}"
+    await manager.connect(room, websocket)
+    await websocket.send_json({"type": "incident.connected", "instance_id": manager.instance_id})
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(room, websocket)
