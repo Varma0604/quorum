@@ -50,12 +50,18 @@ class ConnectionManager:
             async for item in pubsub.listen():
                 if item.get("type") != "pmessage":
                     continue
-                envelope = json.loads(item["data"])
-                if envelope.get("origin") == self.instance_id:
-                    continue
-                await self.broadcast_local(envelope["room"], envelope["event"])
+                await self.deliver_remote(json.loads(item["data"]))
         finally:
             await pubsub.aclose()
+
+    async def deliver_remote(self, envelope: dict):
+        """Deliver a validated remote event to local sockets exactly once per instance."""
+        if envelope.get("origin") == self.instance_id:
+            return
+        room, event = envelope.get("room"), envelope.get("event")
+        if not isinstance(room, str) or not isinstance(event, dict):
+            return
+        await self.broadcast_local(room, event)
 
     async def connect(self, room: str, websocket: WebSocket):
         await websocket.accept()
