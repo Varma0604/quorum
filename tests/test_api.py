@@ -11,6 +11,7 @@ def test_browser_demo_is_served():
     assert response.status_code == 200
     assert "Quorum" in response.text
     assert "Live editing" in response.text
+    assert "Join an existing incident room" in response.text
 
 
 def test_document_version_conflict_and_restore():
